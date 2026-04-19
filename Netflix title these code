@@ -1,0 +1,472 @@
+# ============================================================
+# NETFLIX TITLES THESIS ANALYSIS CODE
+# Charts + equations + LDA + K-means evaluation
+# ============================================================
+
+# If needed, install packages first:
+# !pip install pandas numpy matplotlib scikit-learn ipython
+
+import re
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from collections import Counter
+from IPython.display import display, Markdown, Math
+
+from sklearn.feature_extraction.text import (
+    TfidfVectorizer,
+    CountVectorizer,
+    ENGLISH_STOP_WORDS
+)
+from sklearn.decomposition import LatentDirichletAllocation
+from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score, davies_bouldin_score
+
+
+# ============================================================
+# 1. LOAD DATA
+# ============================================================
+
+# Change this path to your dataset file
+file_path = "netflix_titles.csv"
+
+df = pd.read_csv(file_path)
+
+print("Dataset shape:", df.shape)
+print("Columns:")
+print(df.columns.tolist())
+print("\nFirst 5 rows:")
+print(df.head())
+
+
+# ============================================================
+# 2. BASIC DATA QUALITY CHECKS
+# ============================================================
+
+missing_count = df.isna().sum()
+missing_pct = (missing_count / len(df) * 100).round(1)
+
+missing_table = pd.DataFrame({
+    "Variable": missing_count.index,
+    "Missing Count": missing_count.values,
+    "Missing %": missing_pct.values
+})
+
+missing_table = missing_table[missing_table["Missing Count"] > 0] \
+    .sort_values("Missing Count", ascending=False)
+
+print("\nMissing values table:")
+print(missing_table)
+
+duplicate_count = df.duplicated(subset=["title", "type"]).sum()
+print("\nDuplicate count using title + type:", duplicate_count)
+
+
+# ============================================================
+# 3. HANDLE MISSING VALUES FOR THE MAIN ANALYSIS
+# ============================================================
+
+# Keep descriptive metadata as-is where possible,
+# but fill text fields used for modelling
+df["listed_in"] = df["listed_in"].fillna("")
+df["description"] = df["description"].fillna("")
+df["country"] = df["country"].fillna("Unknown")
+df["director"] = df["director"].fillna("Unknown")
+df["cast"] = df["cast"].fillna("Unknown")
+
+# Average description length
+df["description_word_count"] = df["description"].astype(str).str.split().str.len()
+print("\nAverage description length:", round(df["description_word_count"].mean(), 2), "words")
+
+
+# ============================================================
+# 4. TEXT PREPARATION
+# ============================================================
+
+stop_words = set(ENGLISH_STOP_WORDS)
+
+def clean_text(text):
+    text = str(text).lower()
+    text = re.sub(r"[^a-z\s]", " ", text)      # remove punctuation/numbers
+    text = re.sub(r"\s+", " ", text).strip()   # normalize spaces
+    tokens = [w for w in text.split() if w not in stop_words and len(w) > 2]
+    return " ".join(tokens)
+
+# Create combined corpus from listed_in + description
+df["combined_text"] = (df["listed_in"].astype(str) + " " + df["description"].astype(str)).str.strip()
+df["clean_text"] = df["combined_text"].apply(clean_text)
+
+print("\nSample cleaned text:")
+print(df[["combined_text", "clean_text"]].head())
+
+
+# ============================================================
+# 5. DISPLAY EQUATIONS IN JUPYTER
+# ============================================================
+
+display(Markdown("## Equations used in the thesis"))
+
+display(Markdown("### Equation 1: TF–IDF"))
+display(Math(r'\mathrm{TF\mbox{-}IDF}(t,d)=tf(t,d)\times \log\left(\frac{N}{df(t)}\right)'))
+
+display(Markdown("### Equation 2: Silhouette coefficient"))
+display(Math(r's(i)=\frac{b(i)-a(i)}{\max\{a(i),\,b(i)\}}'))
+
+display(Markdown("### Equation 3: Davies–Bouldin Index"))
+display(Math(r'\mathrm{DBI}=\frac{1}{k}\sum_{i=1}^{k}\max_{j\neq i}\left(\frac{S_i+S_j}{M_{ij}}\right)'))
+
+display(Markdown(r"""
+Where:
+
+- \(tf(t,d)\): frequency of term \(t\) in document \(d\)
+- \(N\): total number of documents
+- \(df(t)\): number of documents containing term \(t\)
+- \(a(i)\): average distance from item \(i\) to other items in the same cluster
+- \(b(i)\): minimum average distance from item \(i\) to another cluster
+- \(S_i\): within-cluster dispersion for cluster \(i\)
+- \(M_{ij}\): distance between centroids of clusters \(i\) and \(j\)
+- \(k\): number of clusters
+"""))
+
+
+# ============================================================
+# 6. FIGURE 3 - MISSING VALUES BY VARIABLE
+# ============================================================
+
+plt.figure(figsize=(9, 5))
+plt.bar(missing_table["Variable"], missing_table["Missing Count"])
+plt.title("Missing values by variable in the Netflix titles dataset")
+plt.xlabel("Variable")
+plt.ylabel("Missing count")
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.savefig("figure3_missing_values.png", dpi=300, bbox_inches="tight")
+plt.show()
+# ============================================================
+# 7. FIGURE 4 - DISTRIBUTION OF CONTENT TYPE
+# ============================================================
+
+type_counts = df["type"].value_counts()
+
+plt.figure(figsize=(7, 5))
+plt.bar(type_counts.index, type_counts.values)
+plt.title("Distribution of content type in the dataset")
+plt.xlabel("Content type")
+plt.ylabel("Number of titles")
+plt.tight_layout()
+plt.savefig("figure4_content_type.png", dpi=300, bbox_inches="tight")
+plt.show()
+
+print("\nContent type counts:")
+print(type_counts)
+
+
+# ============================================================
+# 8. FIGURE 5 - NUMBER OF TITLES BY RELEASE YEAR (2000-2021)
+# ============================================================
+
+release_year_counts = (
+    df[(df["release_year"] >= 2000) & (df["release_year"] <= 2021)]
+    ["release_year"]
+    .value_counts()
+    .sort_index()
+)
+
+plt.figure(figsize=(10, 5))
+plt.plot(release_year_counts.index, release_year_counts.values, marker="o")
+plt.title("Number of titles by release year, 2000–2021")
+plt.xlabel("Release year")
+plt.ylabel("Number of titles")
+plt.tight_layout()
+plt.savefig("figure5_release_year.png", dpi=300, bbox_inches="tight")
+plt.show()
+
+
+# ============================================================
+# 9. FIGURE 6 - TOP GENRE / CATEGORY LABELS
+# ============================================================
+
+genre_counts = (
+    df["listed_in"]
+    .str.split(",")
+    .explode()
+    .str.strip()
+    .replace("", np.nan)
+    .dropna()
+    .value_counts()
+    .head(10)
+)
+
+plt.figure(figsize=(10, 6))
+plt.barh(genre_counts.index[::-1], genre_counts.values[::-1])
+plt.title("Top genre and category labels in the dataset")
+plt.xlabel("Count")
+plt.ylabel("Genre/category")
+plt.tight_layout()
+plt.savefig("figure6_top_genres.png", dpi=300, bbox_inches="tight")
+plt.show()
+
+print("\nTop genres:")
+print(genre_counts)
+
+
+# ============================================================
+# 10. FIGURE 7 - TOP COUNTRIES OF PRODUCTION
+# ============================================================
+
+country_counts = (
+    df["country"]
+    .str.split(",")
+    .explode()
+    .str.strip()
+    .replace("", np.nan)
+    .dropna()
+    .value_counts()
+    .head(10)
+)
+
+plt.figure(figsize=(10, 6))
+plt.barh(country_counts.index[::-1], country_counts.values[::-1])
+plt.title("Top countries of production")
+plt.xlabel("Count")
+plt.ylabel("Country")
+plt.tight_layout()
+plt.savefig("figure7_top_countries.png", dpi=300, bbox_inches="tight")
+plt.show()
+
+print("\nTop countries:")
+print(country_counts)
+
+
+# ============================================================
+# 11. FIGURE 8 - MOST FREQUENT MEANINGFUL TERMS
+# ============================================================
+
+all_tokens = " ".join(df["clean_text"]).split()
+token_counts = Counter(all_tokens)
+top_terms = pd.DataFrame(token_counts.most_common(20), columns=["Term", "Count"])
+
+plt.figure(figsize=(10, 6))
+plt.barh(top_terms["Term"][::-1], top_terms["Count"][::-1])
+plt.title("Most frequent meaningful terms in the cleaned text corpus")
+plt.xlabel("Count")
+plt.ylabel("Term")
+plt.tight_layout()
+plt.savefig("figure8_frequent_terms.png", dpi=300, bbox_inches="tight")
+plt.show()
+
+print("\nTop meaningful terms:")
+print(top_terms)
+
+
+# ============================================================
+# 12. VECTORIZATION
+# ============================================================
+
+# Count matrix for LDA
+count_vectorizer = CountVectorizer(
+    max_df=0.95,
+    min_df=5,
+    ngram_range=(1, 2)
+)
+X_count = count_vectorizer.fit_transform(df["clean_text"])
+
+# TF-IDF matrix for clustering
+tfidf_vectorizer = TfidfVectorizer(
+    max_df=0.95,
+    min_df=5,
+    ngram_range=(1, 2)
+)
+X_tfidf = tfidf_vectorizer.fit_transform(df["clean_text"])
+
+print("\nCount matrix shape:", X_count.shape)
+print("TF-IDF matrix shape:", X_tfidf.shape)
+
+
+# ============================================================
+# 13. LDA TOPIC MODELLING - TEST 3, 4, 5 TOPICS
+# ============================================================
+
+topic_test_results = []
+
+for n_topics in [3, 4, 5]:
+    lda_model = LatentDirichletAllocation(
+        n_components=n_topics,
+        random_state=42,
+        learning_method="batch"
+    )
+    lda_model.fit(X_count)
+    perplexity = lda_model.perplexity(X_count)
+
+    topic_test_results.append({
+        "Number of topics": n_topics,
+        "Perplexity": round(perplexity, 2)
+    })
+
+topic_test_df = pd.DataFrame(topic_test_results).sort_values("Perplexity")
+print("\nLDA topic comparison:")
+print(topic_test_df)
+
+
+# ============================================================
+# 14. FINAL LDA MODEL (4 TOPICS)
+# ============================================================
+
+final_lda = LatentDirichletAllocation(
+    n_components=4,
+    random_state=42,
+    learning_method="batch"
+)
+final_lda.fit(X_count)
+
+count_feature_names = np.array(count_vectorizer.get_feature_names_out())
+
+def get_top_words_per_topic(model, feature_names, n_top_words=10):
+    rows = []
+    for topic_idx, topic_weights in enumerate(model.components_):
+        top_idx = topic_weights.argsort()[-n_top_words:][::-1]
+        top_words = feature_names[top_idx]
+        rows.append({
+            "Topic": topic_idx + 1,
+            "Top terms": ", ".join(top_words)
+        })
+    return pd.DataFrame(rows)
+
+topic_terms_df = get_top_words_per_topic(final_lda, count_feature_names, n_top_words=10)
+
+print("\nTop terms per topic:")
+print(topic_terms_df)
+
+
+# ============================================================
+# 15. FIGURE 9 - TOP TERMS FOR EACH TOPIC
+# ============================================================
+
+for topic_idx, topic_weights in enumerate(final_lda.components_):
+    top_idx = topic_weights.argsort()[-10:][::-1]
+    terms = count_feature_names[top_idx][::-1]
+    weights = topic_weights[top_idx][::-1]
+
+    plt.figure(figsize=(9, 5))
+    plt.barh(terms, weights)
+    plt.title(f"Top terms associated with Topic {topic_idx + 1}")
+    plt.xlabel("Weight")
+    plt.ylabel("Term")
+    plt.tight_layout()
+    plt.savefig(f"figure9_topic_{topic_idx + 1}_terms.png", dpi=300, bbox_inches="tight")
+    plt.show()
+
+
+# ============================================================
+# 16. K-MEANS CLUSTERING - TEST 4, 5, 6 CLUSTERS
+# ============================================================
+
+cluster_test_results = []
+
+# sample for evaluation, especially because DBI needs dense input
+rng = np.random.default_rng(42)
+sample_size = min(2000, X_tfidf.shape[0])
+sample_idx = rng.choice(X_tfidf.shape[0], size=sample_size, replace=False)
+
+X_sample_sparse = X_tfidf[sample_idx]
+X_sample_dense = X_sample_sparse.toarray()
+
+for k in [4, 5, 6]:
+    km = KMeans(n_clusters=k, random_state=42, n_init=20)
+    labels_full = km.fit_predict(X_tfidf)
+    labels_sample = labels_full[sample_idx]
+
+    sil = silhouette_score(X_sample_sparse, labels_sample)
+    dbi = davies_bouldin_score(X_sample_dense, labels_sample)
+
+    cluster_test_results.append({
+        "Number of clusters": k,
+        "Silhouette score": round(sil, 3),
+        "Davies-Bouldin index": round(dbi, 3)
+    })
+
+cluster_test_df = pd.DataFrame(cluster_test_results)
+print("\nCluster evaluation results:")
+print(cluster_test_df)
+
+
+# ============================================================
+# 17. FINAL K-MEANS MODEL (5 CLUSTERS)
+# ============================================================
+
+final_kmeans = KMeans(n_clusters=5, random_state=42, n_init=20)
+df["cluster"] = final_kmeans.fit_predict(X_tfidf) + 1
+
+cluster_counts = df["cluster"].value_counts().sort_index()
+
+print("\nCluster counts:")
+print(cluster_counts)
+
+
+# ============================================================
+# 18. FIGURE 10 - DISTRIBUTION OF RECORDS ACROSS 5 CLUSTERS
+# ============================================================
+
+plt.figure(figsize=(8, 5))
+plt.bar(cluster_counts.index.astype(str), cluster_counts.values)
+plt.title("Distribution of records across the selected five-cluster solution")
+plt.xlabel("Cluster")
+plt.ylabel("Number of records")
+plt.tight_layout()
+plt.savefig("figure10_cluster_distribution.png", dpi=300, bbox_inches="tight")
+plt.show()
+
+
+# ============================================================
+# 19. TOP TERMS PER CLUSTER
+# ============================================================
+
+tfidf_feature_names = np.array(tfidf_vectorizer.get_feature_names_out())
+cluster_centers = final_kmeans.cluster_centers_
+
+cluster_term_rows = []
+
+for i in range(final_kmeans.n_clusters):
+    top_idx = cluster_centers[i].argsort()[-10:][::-1]
+    top_terms = tfidf_feature_names[top_idx]
+    cluster_term_rows.append({
+        "Cluster": i + 1,
+        "Records": int((df["cluster"] == (i + 1)).sum()),
+        "Top terms": ", ".join(top_terms)
+    })
+
+cluster_terms_df = pd.DataFrame(cluster_term_rows)
+print("\nTop terms per cluster:")
+print(cluster_terms_df)
+
+
+# ============================================================
+# 20. OPTIONAL - SUMMARY TABLES TO EXPORT
+# ============================================================
+
+with pd.ExcelWriter("thesis_analysis_outputs.xlsx", engine="openpyxl") as writer:
+    missing_table.to_excel(writer, sheet_name="Missing Values", index=False)
+    topic_test_df.to_excel(writer, sheet_name="LDA Perplexity", index=False)
+    topic_terms_df.to_excel(writer, sheet_name="Topic Terms", index=False)
+    cluster_test_df.to_excel(writer, sheet_name="Cluster Metrics", index=False)
+    cluster_terms_df.to_excel(writer, sheet_name="Cluster Terms", index=False)
+    top_terms.to_excel(writer, sheet_name="Frequent Terms", index=False)
+
+print("\nSaved summary tables to: thesis_analysis_outputs.xlsx")
+
+
+# ============================================================
+# 21. OPTIONAL - SIMPLE THESIS SUMMARY PRINTS
+# ============================================================
+
+print("\n--- THESIS SUMMARY CHECKPOINTS ---")
+print("Total observations:", len(df))
+print("Total variables:", df.shape[1])
+print("Movies:", int((df['type'] == 'Movie').sum()))
+print("TV Shows:", int((df['type'] == 'TV Show').sum()))
+print("Average description length:", round(df["description_word_count"].mean(), 2))
+print("Best topic test result (lowest perplexity):")
+print(topic_test_df.iloc[0].to_dict())
+print("Best cluster result by silhouette:")
+print(cluster_test_df.sort_values("Silhouette score", ascending=False).iloc[0].to_dict())
